@@ -1,0 +1,2 @@
+[gui_scripts]
+remote-share-mount = remote_share.cli:main
