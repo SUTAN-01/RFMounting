@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import platform
 import queue
+import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, X, filedialog, messagebox, ttk
 import tkinter as tk
@@ -279,6 +283,7 @@ class ClientPage(ttk.Frame):
         ttk.Button(conn, text="Refresh", command=self.refresh).pack(side=LEFT, padx=6)
 
         self.share_tree = ttk.Treeview(self, columns=("name", "permission"), show="headings", height=7)
+        # self.share_tree = ttk.Treeview(self, columns=("name", "permission"), height=7)
         self.share_tree.heading("name", text="Share")
         self.share_tree.heading("permission", text="Permission")
         self.share_tree.column("name", width=220)
@@ -411,38 +416,208 @@ class ClientPage(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("Remote Share", str(exc))
 
+    def _normalize_windows_drive(self) -> str:
+        drive = self.mount_var.get().strip().strip("\"'").upper()
+        if len(drive) == 1 and drive.isalpha():
+            return drive + ":"
+        if len(drive) == 2 and drive[0].isalpha() and drive[1] == ":":
+            return drive
+        raise ValueError("Enter a Windows drive letter like Z: or Y:.")
+
+    def _is_local_endpoint_available(self, host: str, port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, port))
+            except OSError:
+                return False
+        return True
+
+    def _next_webdav_endpoint(self, start_port: int) -> tuple[str, int]:
+        if not 1 <= start_port <= 65535:
+            raise ValueError("Local port must be between 1 and 65535.")
+        # Keep the WebDAV bridge on 127.0.0.1 for best compatibility with Windows WebClient.
+        host = "127.0.0.1"
+        used_ports = {
+            int(data.get("listen_port"))
+            for data in self.mounts.values()
+            if data.get("kind") == "windows" and data.get("listen_host") == host and data.get("listen_port") is not None
+        }
+        for port in range(start_port, 65536):
+            if port not in used_ports and self._is_local_endpoint_available(host, port):
+                return host, port
+        raise RuntimeError("No available local WebDAV endpoint found.")
+
+    def _wait_webdav_ready(self, url: str, timeout: float = 8.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            request = urllib.request.Request(url, method="OPTIONS")
+            try:
+                with urllib.request.urlopen(request, timeout=1.0):
+                    return True
+            except Exception:
+                time.sleep(0.2)
+        return False
+
+    def _webdav_targets(self, share: str, listen_host: str, listen_port: int) -> list[str]:
+        share_name = share.strip("/").replace("/", "\\")
+        if not share_name:
+            return []
+        url_share = urllib.parse.quote(share.strip("/"), safe="")
+        targets = [
+            rf"\\{listen_host}@{listen_port}\DavWWWRoot\{share_name}",
+            rf"\\{listen_host}@{listen_port}\{share_name}",
+            f"http://{listen_host}:{listen_port}/{url_share}/",
+        ]
+        if listen_host.startswith("127."):
+            targets.extend(
+                [
+                    rf"\\localhost@{listen_port}\DavWWWRoot\{share_name}",
+                    rf"\\localhost@{listen_port}\{share_name}",
+                    f"http://localhost:{listen_port}/{url_share}/",
+                ]
+            )
+        unique: list[str] = []
+        seen: set[str] = set()
+        for target in targets:
+            if target not in seen:
+                seen.add(target)
+                unique.append(target)
+        return unique
+
+    def _map_windows_drive(self, drive: str, targets: list[str]) -> tuple[str, list[str]]:
+        errors: list[str] = []
+        for target in targets:
+            try:
+                self._run_net_use([drive, target, "/persistent:no"])
+                return target, errors
+            except RuntimeError as exc:
+                errors.append(f"{target}: {exc}")
+        raise RuntimeError("\n".join(errors) if errors else "No WebDAV target generated for mapping.")
+
+    def _run_net_use(self, args: list[str]) -> None:
+        result = subprocess.run(["net", "use", *args], capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(detail or f"net use failed with exit code {result.returncode}")
+
+    def _service_state(self, name: str) -> str | None:
+        result = subprocess.run(["sc", "query", name], capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        text = f"{result.stdout}\n{result.stderr}"
+        for line in text.splitlines():
+            if "STATE" in line:
+                upper = line.upper()
+                if "RUNNING" in upper:
+                    return "RUNNING"
+                if "STOPPED" in upper:
+                    return "STOPPED"
+                return "OTHER"
+        return None
+
+    def _ensure_webclient_running(self) -> None:
+        state = self._service_state("WebClient")
+        if state == "RUNNING":
+            return
+        if state is None:
+            raise RuntimeError("Windows WebClient service was not found. WebDAV drive mapping is unavailable on this system.")
+        start = subprocess.run(["sc", "start", "WebClient"], capture_output=True, text=True)
+        if start.returncode != 0:
+            detail = (start.stderr or start.stdout or "").strip()
+            raise RuntimeError(f"Failed to start WebClient service: {detail or start.returncode}")
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            if self._service_state("WebClient") == "RUNNING":
+                return
+            time.sleep(0.2)
+        raise RuntimeError("WebClient service did not reach RUNNING state in time.")
+
+    def _restart_webclient(self) -> None:
+        subprocess.run(["sc", "stop", "WebClient"], capture_output=True, text=True)
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            state = self._service_state("WebClient")
+            if state in ("STOPPED", None):
+                break
+            time.sleep(0.2)
+        start = subprocess.run(["sc", "start", "WebClient"], capture_output=True, text=True)
+        if start.returncode != 0:
+            detail = (start.stderr or start.stdout or "").strip()
+            raise RuntimeError(f"Failed to restart WebClient service: {detail or start.returncode}")
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            if self._service_state("WebClient") == "RUNNING":
+                return
+            time.sleep(0.2)
+        raise RuntimeError("WebClient service did not become RUNNING after restart.")
+
+    def _is_windows_drive_in_use(self, drive: str) -> bool:
+        bit = ord(drive[0]) - ord("A")
+        return bool(ctypes.windll.kernel32.GetLogicalDrives() & (1 << bit))
+
     def _mount_windows(self, share: str) -> None:
-        drive = self.mount_var.get().strip().upper()
-        if len(drive) == 1:
-            drive += ":"
-        listen_port = int(self.local_port_var.get() or "18080")
-        url = f"http://127.0.0.1:{listen_port}/{share}"
-        cmd = _app_command(
-            "webdav",
-            "--remote-host",
-            self.host_var.get(),
-            "--remote-port",
-            self.port_var.get(),
-            "--share",
-            share,
-            "--listen-port",
-            str(listen_port),
-            "--username",
-            self.username_var.get(),
-            "--password",
-            self.password_var.get(),
-        )
+        proc = None
         try:
+            drive = self._normalize_windows_drive()
+            if any(data.get("kind") == "windows" and data.get("target") == drive for data in self.mounts.values()):
+                raise ValueError(f"{drive} is already mounted in this window. Choose another drive letter.")
+            if self._is_windows_drive_in_use(drive):
+                raise ValueError(f"{drive} is already in use by Windows. Choose another drive letter or unmount it first.")
+            self._ensure_webclient_running()
+            listen_host, listen_port = self._next_webdav_endpoint(int(self.local_port_var.get() or "18080"))
+            url_share = urllib.parse.quote(share.strip("/"), safe="")
+            url = f"http://{listen_host}:{listen_port}/{url_share}/"
+            cmd = _app_command(
+                "webdav",
+                "--remote-host",
+                self.host_var.get(),
+                "--remote-port",
+                self.port_var.get(),
+                "--share",
+                share,
+                "--listen-host",
+                listen_host,
+                "--listen-port",
+                str(listen_port),
+                "--username",
+                self.username_var.get(),
+                "--password",
+                self.password_var.get(),
+            )
             proc = _popen(cmd)
-            time.sleep(1.0)
-            subprocess.run(["net", "use", drive, url, "/persistent:no"], check=True, capture_output=True, text=True)
-            item_id = self.mount_tree.insert("", END, values=(share, drive, f"WebDAV {url} pid={proc.pid}"))
-            self.mounts[item_id] = {"share": share, "target": drive, "proc": proc, "kind": "windows", "url": url}
-            self.log(f"mounted {share} to {drive}")
+            if not self._wait_webdav_ready(url):
+                raise RuntimeError("WebDAV bridge did not become ready in time.")
+            if proc.poll() is not None:
+                raise RuntimeError("WebDAV bridge exited before Windows could map the drive.")
+            targets = self._webdav_targets(share, listen_host, listen_port)
+            try:
+                mapped_target, attempts = self._map_windows_drive(drive, targets)
+            except RuntimeError as first_exc:
+                if "System error 67" not in str(first_exc):
+                    raise
+                self.log("WebDAV mapping returned system error 67, restarting WebClient and retrying once.")
+                self._restart_webclient()
+                mapped_target, attempts = self._map_windows_drive(drive, targets)
+            item_id = self.mount_tree.insert("", END, values=(share, drive, f"WebDAV {mapped_target} pid={proc.pid}"))
+            self.mounts[item_id] = {
+                "share": share,
+                "target": drive,
+                "proc": proc,
+                "kind": "windows",
+                "url": mapped_target,
+                "listen_host": listen_host,
+                "listen_port": listen_port,
+            }
+            self.log(f"mounted {share} to {drive} via {listen_host}:{listen_port}")
+            if attempts:
+                self.log(f"mount fallback succeeded after {len(attempts)} failed target(s)")
         except Exception as exc:
-            if "proc" in locals() and proc.poll() is None:
+            if proc and proc.poll() is None:
                 proc.terminate()
-            messagebox.showerror("Remote Share", str(exc))
+            details = str(exc)
+            if "System error 67" in details:
+                details += "\n\nHint: verify Windows WebClient service is running, then retry mount."
+            messagebox.showerror("Remote Share", details)
 
     def unmount_selected(self) -> None:
         item_id = self._selected_mount_id()
@@ -454,7 +629,10 @@ class ClientPage(ttk.Frame):
             return
         try:
             if data["kind"] == "windows":
-                subprocess.run(["net", "use", data["target"], "/delete", "/y"], capture_output=True, text=True)
+                result = subprocess.run(["net", "use", data["target"], "/delete", "/y"], capture_output=True, text=True)
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    self.log(f"warning: failed to remove Windows drive mapping: {detail or result.returncode}")
             else:
                 tool = "fusermount3" if shutil_which("fusermount3") else "fusermount"
                 subprocess.run([tool, "-u", data["target"]], capture_output=True, text=True)
@@ -501,6 +679,7 @@ class UnifiedGUI:
         self.root.mainloop()
 
     def _on_close(self) -> None:
+        # self.unmount_selected()
         self.server_page.stop()
         self.client_page.stop_all()
         self.root.destroy()

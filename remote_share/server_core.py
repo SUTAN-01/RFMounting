@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import time
 import uuid
@@ -21,6 +22,15 @@ from .protocol import (
 
 READONLY = "readonly"
 READWRITE = "readwrite"
+
+
+if hasattr(asyncio, "to_thread"):
+    _to_thread = asyncio.to_thread
+else:
+    async def _to_thread(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        bound = functools.partial(func, *args, **kwargs)
+        return await loop.run_in_executor(None, bound)
 
 
 class RemoteShareError(RuntimeError):
@@ -274,13 +284,13 @@ class RemoteShareServer:
             raise BadRequestError("missing share")
 
         if op == "list_dir":
-            return {"ok": True, "entries": await asyncio.to_thread(self.list_dir, session_id, share, path)}, b""
+            return {"ok": True, "entries": await _to_thread(self.list_dir, session_id, share, path)}, b""
         if op == "stat":
-            return {"ok": True, "stat": await asyncio.to_thread(self.stat, session_id, share, path)}, b""
+            return {"ok": True, "stat": await _to_thread(self.stat, session_id, share, path)}, b""
         if op == "read":
             offset = int(request.get("offset", 0))
             size = int(request.get("size", MAX_CHUNK_SIZE))
-            meta, payload = await asyncio.to_thread(self.read_file, session_id, share, path, offset, size)
+            meta, payload = await _to_thread(self.read_file, session_id, share, path, offset, size)
             return {"ok": True, **meta}, payload
         if op == "write":
             offset = int(request.get("offset", 0))
@@ -289,19 +299,19 @@ class RemoteShareServer:
         if op == "create":
             kind = str(request.get("kind", "file"))
             truncate = bool(request.get("truncate", False))
-            return {"ok": True, **await asyncio.to_thread(self.create, session_id, share, path, kind, truncate)}, b""
+            return {"ok": True, **await _to_thread(self.create, session_id, share, path, kind, truncate)}, b""
         if op == "truncate":
             size = int(request.get("size", 0))
-            return {"ok": True, **await asyncio.to_thread(self.truncate, session_id, share, path, size)}, b""
+            return {"ok": True, **await _to_thread(self.truncate, session_id, share, path, size)}, b""
         if op == "delete":
-            return {"ok": True, **await asyncio.to_thread(self.delete, session_id, share, path)}, b""
+            return {"ok": True, **await _to_thread(self.delete, session_id, share, path)}, b""
         if op == "rename":
             new_path = str(request.get("new_path") or "")
-            return {"ok": True, **await asyncio.to_thread(self.rename, session_id, share, path, new_path)}, b""
+            return {"ok": True, **await _to_thread(self.rename, session_id, share, path, new_path)}, b""
         if op == "utime":
             atime = float(request.get("atime", time.time()))
             mtime = float(request.get("mtime", time.time()))
-            return {"ok": True, **await asyncio.to_thread(self.utime, session_id, share, path, atime, mtime)}, b""
+            return {"ok": True, **await _to_thread(self.utime, session_id, share, path, atime, mtime)}, b""
 
         raise BadRequestError(f"unknown op: {op}")
 
@@ -397,7 +407,7 @@ class RemoteShareServer:
         self._active_writers[str(target)] = session_id
         async with lock:
             try:
-                meta = await asyncio.to_thread(self._write_file_sync, target, offset, data)
+                meta = await _to_thread(self._write_file_sync, target, offset, data)
                 self._write_versions[str(target)] = (meta["mtime_ns"], session_id)
             finally:
                 if self._active_writers.get(str(target)) == session_id:
@@ -491,7 +501,7 @@ class RemoteShareServer:
         while True:
             try:
                 await asyncio.sleep(2.0)
-                await asyncio.to_thread(self._scan_once)
+                await _to_thread(self._scan_once)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

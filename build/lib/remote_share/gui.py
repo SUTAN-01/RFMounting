@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import platform
 import queue
+import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, X, filedialog, messagebox, ttk
 import tkinter as tk
@@ -278,6 +281,7 @@ class ClientPage(ttk.Frame):
         ttk.Entry(conn, textvariable=self.password_var, width=14, show="*").pack(side=LEFT, padx=4)
         ttk.Button(conn, text="Refresh", command=self.refresh).pack(side=LEFT, padx=6)
 
+        # self.share_tree = ttk.Treeview(self, columns=("name", "permission"), show="headings", height=7)
         self.share_tree = ttk.Treeview(self, columns=("name", "permission"), show="headings", height=7)
         self.share_tree.heading("name", text="Share")
         self.share_tree.heading("permission", text="Permission")
@@ -411,36 +415,93 @@ class ClientPage(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("Remote Share", str(exc))
 
+    def _normalize_windows_drive(self) -> str:
+        drive = self.mount_var.get().strip().strip("\"'").upper()
+        if len(drive) == 1 and drive.isalpha():
+            return drive + ":"
+        if len(drive) == 2 and drive[0].isalpha() and drive[1] == ":":
+            return drive
+        raise ValueError("Enter a Windows drive letter like Z: or Y:.")
+
+    def _is_local_endpoint_available(self, host: str, port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, port))
+            except OSError:
+                return False
+        return True
+
+    def _next_webdav_endpoint(self, start_port: int) -> tuple[str, int]:
+        if not 1 <= start_port <= 65535:
+            raise ValueError("Local port must be between 1 and 65535.")
+        used = {
+            (data.get("listen_host"), data.get("listen_port"))
+            for data in self.mounts.values()
+            if data.get("kind") == "windows"
+        }
+        for last_octet in range(1, 255):
+            host = f"127.0.0.{last_octet}"
+            for port in range(start_port, 65536):
+                if (host, port) not in used and self._is_local_endpoint_available(host, port):
+                    return host, port
+        raise RuntimeError("No available local WebDAV endpoint found.")
+
+    def _run_net_use(self, args: list[str]) -> None:
+        result = subprocess.run(["net", "use", *args], capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(detail or f"net use failed with exit code {result.returncode}")
+
+    def _is_windows_drive_in_use(self, drive: str) -> bool:
+        bit = ord(drive[0]) - ord("A")
+        return bool(ctypes.windll.kernel32.GetLogicalDrives() & (1 << bit))
+
     def _mount_windows(self, share: str) -> None:
-        drive = self.mount_var.get().strip().upper()
-        if len(drive) == 1:
-            drive += ":"
-        listen_port = int(self.local_port_var.get() or "18080")
-        url = f"http://127.0.0.1:{listen_port}/{share}"
-        cmd = _app_command(
-            "webdav",
-            "--remote-host",
-            self.host_var.get(),
-            "--remote-port",
-            self.port_var.get(),
-            "--share",
-            share,
-            "--listen-port",
-            str(listen_port),
-            "--username",
-            self.username_var.get(),
-            "--password",
-            self.password_var.get(),
-        )
+        proc = None
         try:
+            drive = self._normalize_windows_drive()
+            if any(data.get("kind") == "windows" and data.get("target") == drive for data in self.mounts.values()):
+                raise ValueError(f"{drive} is already mounted in this window. Choose another drive letter.")
+            if self._is_windows_drive_in_use(drive):
+                raise ValueError(f"{drive} is already in use by Windows. Choose another drive letter or unmount it first.")
+            listen_host, listen_port = self._next_webdav_endpoint(int(self.local_port_var.get() or "18080"))
+            url_share = urllib.parse.quote(share.strip("/"), safe="")
+            url = f"http://{listen_host}:{listen_port}/{url_share}"
+            cmd = _app_command(
+                "webdav",
+                "--remote-host",
+                self.host_var.get(),
+                "--remote-port",
+                self.port_var.get(),
+                "--share",
+                share,
+                "--listen-host",
+                listen_host,
+                "--listen-port",
+                str(listen_port),
+                "--username",
+                self.username_var.get(),
+                "--password",
+                self.password_var.get(),
+            )
             proc = _popen(cmd)
             time.sleep(1.0)
-            subprocess.run(["net", "use", drive, url, "/persistent:no"], check=True, capture_output=True, text=True)
+            if proc.poll() is not None:
+                raise RuntimeError("WebDAV bridge exited before Windows could map the drive.")
+            self._run_net_use([drive, url, "/persistent:no"])
             item_id = self.mount_tree.insert("", END, values=(share, drive, f"WebDAV {url} pid={proc.pid}"))
-            self.mounts[item_id] = {"share": share, "target": drive, "proc": proc, "kind": "windows", "url": url}
-            self.log(f"mounted {share} to {drive}")
+            self.mounts[item_id] = {
+                "share": share,
+                "target": drive,
+                "proc": proc,
+                "kind": "windows",
+                "url": url,
+                "listen_host": listen_host,
+                "listen_port": listen_port,
+            }
+            self.log(f"mounted {share} to {drive} via {listen_host}:{listen_port}")
         except Exception as exc:
-            if "proc" in locals() and proc.poll() is None:
+            if proc and proc.poll() is None:
                 proc.terminate()
             messagebox.showerror("Remote Share", str(exc))
 
@@ -454,7 +515,10 @@ class ClientPage(ttk.Frame):
             return
         try:
             if data["kind"] == "windows":
-                subprocess.run(["net", "use", data["target"], "/delete", "/y"], capture_output=True, text=True)
+                result = subprocess.run(["net", "use", data["target"], "/delete", "/y"], capture_output=True, text=True)
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    self.log(f"warning: failed to remove Windows drive mapping: {detail or result.returncode}")
             else:
                 tool = "fusermount3" if shutil_which("fusermount3") else "fusermount"
                 subprocess.run([tool, "-u", data["target"]], capture_output=True, text=True)
