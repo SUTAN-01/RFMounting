@@ -21,6 +21,8 @@ from .client_core import RemoteShareClient
 from .server_core import READONLY, READWRITE, RemoteShareServer, Share, UserAccount
 
 CONFIG_PATH = Path.home() / ".remote_share_mount" / "config.json"
+YES = "Yes"
+NO = "No"
 
 
 def _load_config() -> dict:
@@ -48,6 +50,14 @@ def _popen(cmd: list[str]) -> subprocess.Popen:
     if platform.system() == "Windows":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(cmd, **kwargs)
+
+
+def _bool_text(value: bool) -> str:
+    return YES if value else NO
+
+
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "allow", "allowed"}
 
 
 class ServerPage(ttk.Frame):
@@ -78,22 +88,31 @@ class ServerPage(ttk.Frame):
         share_bar = ttk.Frame(self)
         share_bar.pack(fill=X, pady=(10, 4))
         ttk.Button(share_bar, text="Add Directory", command=self.add_share).pack(side=LEFT)
-        ttk.Button(share_bar, text="Remove Share", command=self.remove_share).pack(side=LEFT, padx=6)
+        ttk.Button(share_bar, text="Edit Directory", command=self.edit_share).pack(side=LEFT, padx=6)
+        ttk.Button(share_bar, text="Remove Share", command=self.remove_share).pack(side=LEFT)
 
-        self.share_tree = ttk.Treeview(self, columns=("name", "path", "permission"), show="headings", height=7)
+        self.share_tree = ttk.Treeview(
+            self,
+            columns=("name", "path", "permission", "allow_create_delete"),
+            show="headings",
+            height=7,
+        )
         for name, text, width in (
             ("name", "Share", 120),
-            ("path", "Path", 420),
+            ("path", "Path", 360),
             ("permission", "Permission", 100),
+            ("allow_create_delete", "Delete/Rename", 110),
         ):
             self.share_tree.heading(name, text=text)
             self.share_tree.column(name, width=width)
         self.share_tree.pack(fill=BOTH, expand=True)
+        self.share_tree.bind("<Double-1>", lambda _event: self.edit_share())
 
         user_bar = ttk.Frame(self)
         user_bar.pack(fill=X, pady=(10, 4))
         ttk.Button(user_bar, text="Add User", command=self.add_user).pack(side=LEFT)
-        ttk.Button(user_bar, text="Remove User", command=self.remove_user).pack(side=LEFT, padx=6)
+        ttk.Button(user_bar, text="Edit User", command=self.edit_user).pack(side=LEFT, padx=6)
+        ttk.Button(user_bar, text="Remove User", command=self.remove_user).pack(side=LEFT)
 
         self.user_tree = ttk.Treeview(self, columns=("username", "shares"), show="headings", height=5)
         self.user_tree.heading("username", text="User")
@@ -101,6 +120,7 @@ class ServerPage(ttk.Frame):
         self.user_tree.column("username", width=160)
         self.user_tree.column("shares", width=520)
         self.user_tree.pack(fill=BOTH, expand=True)
+        self.user_tree.bind("<Double-1>", lambda _event: self.edit_user())
 
         ttk.Label(self, text="Log").pack(anchor="w", pady=(10, 2))
         self.log_text = tk.Text(self, height=9)
@@ -108,7 +128,16 @@ class ServerPage(ttk.Frame):
 
     def _load(self) -> None:
         for item in self.config.get("shares", []):
-            self.share_tree.insert("", END, values=(item["name"], item["path"], item["permission"]))
+            self.share_tree.insert(
+                "",
+                END,
+                values=(
+                    item["name"],
+                    item["path"],
+                    item["permission"],
+                    _bool_text(bool(item.get("allow_create_delete", False))),
+                ),
+            )
         for item in self.config.get("users", []):
             shares = ",".join(item.get("shares", []))
             self.user_tree.insert("", END, values=(item["username"], shares))
@@ -116,8 +145,10 @@ class ServerPage(ttk.Frame):
     def _current_shares(self) -> list[Share]:
         shares: list[Share] = []
         for item_id in self.share_tree.get_children():
-            name, path, permission = self.share_tree.item(item_id, "values")
-            shares.append(Share(str(name), Path(path), str(permission)))
+            values = list(self.share_tree.item(item_id, "values"))
+            name, path, permission = values[:3]
+            allow_create_delete = _truthy(values[3]) if len(values) > 3 else False
+            shares.append(Share(str(name), Path(path), str(permission), allow_create_delete))
         return shares
 
     def _current_users(self) -> list[UserAccount]:
@@ -133,7 +164,12 @@ class ServerPage(ttk.Frame):
         self.config["server_host"] = self.host_var.get()
         self.config["server_port"] = int(self.port_var.get() or "18888")
         self.config["shares"] = [
-            {"name": share.name, "path": str(share.path), "permission": share.permission}
+            {
+                "name": share.name,
+                "path": str(share.path),
+                "permission": share.permission,
+                "allow_create_delete": share.allow_create_delete,
+            }
             for share in self._current_shares()
         ]
         self.config["users"] = [
@@ -142,40 +178,175 @@ class ServerPage(ttk.Frame):
         ]
         _save_config(self.config)
 
+    def _persist_and_apply(self) -> bool:
+        try:
+            shares = self._current_shares()
+            share_names = {share.name for share in shares}
+            for share in shares:
+                share.validate()
+            users = self._current_users()
+            for user in users:
+                user.validate(share_names)
+        except Exception as exc:
+            messagebox.showerror("Remote Share", str(exc))
+            return False
+        self._persist()
+        if self.server and self.loop and self.thread and self.thread.is_alive():
+            self.loop.call_soon_threadsafe(self.server.update_config, shares, users)
+        return True
+
+    def _replace_user_share_name(self, old_name: str, new_name: str) -> None:
+        if not old_name or old_name == new_name:
+            return
+        for item_id in self.user_tree.get_children():
+            username, shares_text = self.user_tree.item(item_id, "values")
+            parts = [part.strip() for part in str(shares_text).split(",") if part.strip()]
+            if "*" in parts:
+                continue
+            changed = [new_name if part == old_name else part for part in parts]
+            self.user_tree.item(item_id, values=(username, ",".join(changed)))
+
+    def _remove_user_share_names(self, removed_names: set[str]) -> None:
+        if not removed_names:
+            return
+        for item_id in self.user_tree.get_children():
+            username, shares_text = self.user_tree.item(item_id, "values")
+            parts = [part.strip() for part in str(shares_text).split(",") if part.strip()]
+            if "*" in parts:
+                continue
+            kept = [part for part in parts if part not in removed_names]
+            self.user_tree.item(item_id, values=(username, ",".join(kept)))
+
     def add_share(self) -> None:
         path = filedialog.askdirectory(title="Choose directory to share")
         if not path:
             return
+        self._open_share_dialog(
+            title="Add Share",
+            item_id=None,
+            name=Path(path).name or "Share",
+            path=path,
+            permission=READONLY,
+            allow_create_delete=False,
+        )
+
+    def edit_share(self) -> None:
+        selection = self.share_tree.selection()
+        if not selection:
+            messagebox.showwarning("Remote Share", "Select a shared directory first.")
+            return
+        item_id = selection[0]
+        values = list(self.share_tree.item(item_id, "values"))
+        self._open_share_dialog(
+            title="Edit Share",
+            item_id=item_id,
+            name=str(values[0]),
+            path=str(values[1]),
+            permission=str(values[2]),
+            allow_create_delete=_truthy(values[3]) if len(values) > 3 else False,
+        )
+
+    def _open_share_dialog(
+        self,
+        title: str,
+        item_id: str | None,
+        name: str,
+        path: str,
+        permission: str,
+        allow_create_delete: bool,
+    ) -> None:
         dialog = tk.Toplevel(self)
-        dialog.title("Add Share")
-        name_var = tk.StringVar(value=Path(path).name or "Share")
-        perm_var = tk.StringVar(value=READONLY)
+        dialog.title(title)
+        name_var = tk.StringVar(value=name)
+        path_var = tk.StringVar(value=path)
+        perm_var = tk.StringVar(value=permission)
+        create_var = tk.BooleanVar(value=allow_create_delete)
+
+        def browse() -> None:
+            selected = filedialog.askdirectory(title="Choose directory to share")
+            if selected:
+                path_var.set(selected)
+
         ttk.Label(dialog, text="Name").pack(padx=10, pady=(10, 2), anchor="w")
         ttk.Entry(dialog, textvariable=name_var).pack(padx=10, fill=X)
+        ttk.Label(dialog, text="Path").pack(padx=10, pady=(10, 2), anchor="w")
+        path_row = ttk.Frame(dialog)
+        path_row.pack(padx=10, fill=X)
+        ttk.Entry(path_row, textvariable=path_var, width=46).pack(side=LEFT, fill=X, expand=True)
+        ttk.Button(path_row, text="Browse", command=browse).pack(side=LEFT, padx=(6, 0))
         ttk.Label(dialog, text="Permission").pack(padx=10, pady=(10, 2), anchor="w")
         ttk.Combobox(dialog, textvariable=perm_var, values=(READONLY, READWRITE), state="readonly").pack(padx=10, fill=X)
+        ttk.Checkbutton(
+            dialog,
+            text="Allow deleting and renaming files/directories",
+            variable=create_var,
+        ).pack(padx=10, pady=(10, 0), anchor="w")
 
         def accept() -> None:
-            self.share_tree.insert("", END, values=(name_var.get().strip(), path, perm_var.get()))
-            self._persist()
-            dialog.destroy()
+            share_name = name_var.get().strip()
+            share_path = path_var.get().strip()
+            if not share_name or not share_path:
+                return
+            values = (share_name, share_path, perm_var.get(), _bool_text(create_var.get()))
+            if item_id:
+                self.share_tree.item(item_id, values=values)
+                self._replace_user_share_name(name, share_name)
+            else:
+                self.share_tree.insert("", END, values=values)
+            if self._persist_and_apply():
+                dialog.destroy()
 
-        ttk.Button(dialog, text="Add", command=accept).pack(pady=10)
+        ttk.Button(dialog, text="Save", command=accept).pack(pady=10)
         dialog.transient(self)
         dialog.grab_set()
 
     def remove_share(self) -> None:
+        removed_names: set[str] = set()
         for item_id in self.share_tree.selection():
+            removed_names.add(str(self.share_tree.item(item_id, "values")[0]))
             self.share_tree.delete(item_id)
-        self._persist()
+        self._remove_user_share_names(removed_names)
+        self._persist_and_apply()
 
     def add_user(self) -> None:
         share_names = [self.share_tree.item(item_id, "values")[0] for item_id in self.share_tree.get_children()]
+        self._open_user_dialog(
+            title="Add User",
+            item_id=None,
+            username="",
+            password="",
+            shares_text=",".join(share_names),
+        )
+
+    def edit_user(self) -> None:
+        selection = self.user_tree.selection()
+        if not selection:
+            messagebox.showwarning("Remote Share", "Select a user first.")
+            return
+        item_id = selection[0]
+        username, shares_text = self.user_tree.item(item_id, "values")
+        password = str(self.config.setdefault("user_passwords", {}).get(str(username), ""))
+        self._open_user_dialog(
+            title="Edit User",
+            item_id=item_id,
+            username=str(username),
+            password=password,
+            shares_text=str(shares_text),
+        )
+
+    def _open_user_dialog(
+        self,
+        title: str,
+        item_id: str | None,
+        username: str,
+        password: str,
+        shares_text: str,
+    ) -> None:
         dialog = tk.Toplevel(self)
-        dialog.title("Add User")
-        username_var = tk.StringVar()
-        password_var = tk.StringVar()
-        shares_var = tk.StringVar(value=",".join(share_names))
+        dialog.title(title)
+        username_var = tk.StringVar(value=username)
+        password_var = tk.StringVar(value=password)
+        shares_var = tk.StringVar(value=shares_text)
         ttk.Label(dialog, text="Username").pack(padx=10, pady=(10, 2), anchor="w")
         ttk.Entry(dialog, textvariable=username_var).pack(padx=10, fill=X)
         ttk.Label(dialog, text="Password").pack(padx=10, pady=(10, 2), anchor="w")
@@ -184,16 +355,22 @@ class ServerPage(ttk.Frame):
         ttk.Entry(dialog, textvariable=shares_var, width=46).pack(padx=10, fill=X)
 
         def accept() -> None:
-            username = username_var.get().strip()
-            if not username:
+            next_username = username_var.get().strip()
+            if not next_username:
                 return
-            shares_text = shares_var.get().strip() or "*"
-            self.config.setdefault("user_passwords", {})[username] = password_var.get()
-            self.user_tree.insert("", END, values=(username, shares_text))
-            self._persist()
-            dialog.destroy()
+            next_shares_text = shares_var.get().strip() or "*"
+            passwords = self.config.setdefault("user_passwords", {})
+            if item_id and username and username != next_username:
+                passwords.pop(username, None)
+            passwords[next_username] = password_var.get()
+            if item_id:
+                self.user_tree.item(item_id, values=(next_username, next_shares_text))
+            else:
+                self.user_tree.insert("", END, values=(next_username, next_shares_text))
+            if self._persist_and_apply():
+                dialog.destroy()
 
-        ttk.Button(dialog, text="Add", command=accept).pack(pady=10)
+        ttk.Button(dialog, text="Save", command=accept).pack(pady=10)
         dialog.transient(self)
         dialog.grab_set()
 
@@ -203,7 +380,7 @@ class ServerPage(ttk.Frame):
             username = str(self.user_tree.item(item_id, "values")[0])
             passwords.pop(username, None)
             self.user_tree.delete(item_id)
-        self._persist()
+        self._persist_and_apply()
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -282,12 +459,14 @@ class ClientPage(ttk.Frame):
         ttk.Entry(conn, textvariable=self.password_var, width=14, show="*").pack(side=LEFT, padx=4)
         ttk.Button(conn, text="Refresh", command=self.refresh).pack(side=LEFT, padx=6)
 
-        self.share_tree = ttk.Treeview(self, columns=("name", "permission"), show="headings", height=7)
+        self.share_tree = ttk.Treeview(self, columns=("name", "permission", "allow_create_delete"), show="headings", height=7)
         # self.share_tree = ttk.Treeview(self, columns=("name", "permission"), height=7)
         self.share_tree.heading("name", text="Share")
         self.share_tree.heading("permission", text="Permission")
+        self.share_tree.heading("allow_create_delete", text="Delete/Rename")
         self.share_tree.column("name", width=220)
         self.share_tree.column("permission", width=120)
+        self.share_tree.column("allow_create_delete", width=120)
         self.share_tree.pack(fill=BOTH, expand=True, pady=(10, 4))
 
         mount = ttk.Frame(self)
@@ -349,7 +528,15 @@ class ClientPage(ttk.Frame):
             client.close()
             self.share_tree.delete(*self.share_tree.get_children())
             for share in shares:
-                self.share_tree.insert("", END, values=(share["name"], share["permission"]))
+                self.share_tree.insert(
+                    "",
+                    END,
+                    values=(
+                        share["name"],
+                        share["permission"],
+                        _bool_text(bool(share.get("allow_create_delete", False))),
+                    ),
+                )
             self._persist()
             self.log(f"loaded {len(shares)} share(s)")
         except Exception as exc:

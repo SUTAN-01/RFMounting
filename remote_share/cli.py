@@ -27,7 +27,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_list(args: argparse.Namespace) -> int:
     client = RemoteShareClient(args.host, args.port, username=args.username, password=args.password)
     for share in client.list_shares():
-        print(f"{share['name']}\t{share['permission']}\t{share['path']}")
+        create_delete = "create-delete" if share.get("allow_create_delete") else "existing-only"
+        print(f"{share['name']}\t{share['permission']}\t{create_delete}\t{share['path']}")
     client.close()
     return 0
 
@@ -102,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="start remote share server")
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=18888)
-    serve.add_argument("--share", action="append", default=[], help="NAME=PATH:readonly|readwrite")
+    serve.add_argument("--share", action="append", default=[], help="NAME=PATH:readonly|readwrite[:create]")
     serve.add_argument("--user", action="append", default=[], help="USER=PASSWORD:share1,share2 or USER=PASSWORD:*")
     serve.set_defaults(func=cmd_serve)
 

@@ -5,9 +5,9 @@
 ## 已实现功能
 
 - 单一 GUI 程序，标签页切换 `Server` / `Client`
-- 多共享目录，每个共享目录支持 `readonly` / `readwrite`
+- 多共享目录，每个共享目录支持 `readonly` / `readwrite`，并可单独勾选是否允许新建/删除
 - 可选多用户隔离：服务端添加用户后，客户端必须输入用户名和密码
-- 每个用户可授权访问指定共享，或用 `*` 授权全部共享
+- 每个用户可授权访问指定共享，或用 `*` 授权全部共享；用户添加后仍可编辑授权范围
 - 多 IP / 多客户端可同时访问同一共享和同一文件
 - Last-Write-Wins 并发写入策略，并向覆盖方返回冲突警告
 - TCP 自定义协议：`1 byte type + 4 bytes length + frame body`
@@ -33,13 +33,14 @@ python -m remote_share.cli gui
 
 打开后：
 
-1. 在 `Server` 页添加共享目录和权限。
+1. 在 `Server` 页添加共享目录和权限。`readwrite` 允许修改已有文件；勾选 `Create/Delete` 后才允许客户端新建、删除、重命名文件或目录。
 2. 可选：添加用户，设置密码和允许访问的共享名，例如 `Work,Projects` 或 `*`。
-3. 点击 `Start Service`。
-4. 在 `Client` 页输入服务端 IP、端口、用户名、密码。
-5. 点击 `Refresh`，选择共享。
-6. Windows 输入盘符如 `Z:`，Linux 输入挂载点，点击 `Mount Selected`。
-7. 选中已挂载列表中的条目，点击 `Unmount Selected` 卸载。
+3. 已添加的共享和用户都可以用 `Edit Directory` / `Edit User` 或双击列表项修改；服务运行中修改会立即应用到后续客户端操作。
+4. 点击 `Start Service`。
+5. 在 `Client` 页输入服务端 IP、端口、用户名、密码。
+6. 点击 `Refresh`，选择共享。
+7. Windows 输入盘符如 `Z:`，Linux 输入挂载点，点击 `Mount Selected`。
+8. 选中已挂载列表中的条目，点击 `Unmount Selected` 卸载。
 
 ## 命令行
 
@@ -52,8 +53,10 @@ python -m remote_share.cli serve --host 0.0.0.0 --port 18888 --share Work=D:\Wor
 带用户隔离：
 
 ```powershell
-python -m remote_share.cli serve --host 0.0.0.0 --port 18888 --share Work=D:\Work:readonly --share Projects=D:\Projects:readwrite --user alice=pass123:Work --user bob=pass456:Work,Projects
+python -m remote_share.cli serve --host 0.0.0.0 --port 18888 --share Work=D:\Work:readonly --share Projects=D:\Projects:readwrite:create --user alice=pass123:Work --user bob=pass456:Work,Projects
 ```
+
+命令行共享格式为 `NAME=PATH:readonly|readwrite[:create]`。省略 `:create` 时，`readwrite` 只允许修改已有文件；追加 `:create` 后允许新建、删除和重命名。
 
 客户端列共享：
 

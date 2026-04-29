@@ -54,6 +54,7 @@ class Share:
     name: str
     path: Path
     permission: str = READONLY
+    allow_create_delete: bool = False
 
     def validate(self) -> None:
         if not self.name or "/" in self.name or "\\" in self.name:
@@ -188,10 +189,32 @@ class RemoteShareServer:
         except PathEscapeError as exc:
             raise PermissionDeniedError(str(exc)) from exc
 
-    def _require_write(self, session_id: str, share_name: str) -> None:
+    def _require_write(self, session_id: str, share_name: str) -> Share:
         share = self._get_share(session_id, share_name)
         if share.permission != READWRITE:
             raise PermissionDeniedError(f"share {share_name} is readonly")
+        return share
+
+    def _require_create_delete(self, session_id: str, share_name: str) -> Share:
+        share = self._require_write(session_id, share_name)
+        if not share.allow_create_delete:
+            raise PermissionDeniedError(f"share {share_name} does not allow deleting or renaming files")
+        return share
+
+    def update_config(self, shares: list[Share], users: list[UserAccount] | None = None) -> None:
+        for share in shares:
+            share.validate()
+        next_shares = {share.name: share for share in shares}
+        next_users = {user.username: user for user in (users or [])}
+        for user in next_users.values():
+            user.validate(set(next_shares))
+        self.shares = next_shares
+        self.users = next_users
+        if self.users:
+            for session_id, username in list(self._session_users.items()):
+                if username != "anonymous" and username not in self.users:
+                    self._session_users.pop(session_id, None)
+        self.log(f"configuration updated: {len(self.shares)} share(s), {len(self.users)} user(s)")
 
     def _lock_for(self, path: Path) -> asyncio.Lock:
         key = str(path)
@@ -318,7 +341,12 @@ class RemoteShareServer:
     def list_shares(self, session_id: str) -> list[dict[str, Any]]:
         username = self._session_user(session_id)
         return [
-            {"name": share.name, "permission": share.permission, "path": str(share.path)}
+            {
+                "name": share.name,
+                "permission": share.permission,
+                "path": str(share.path),
+                "allow_create_delete": share.allow_create_delete,
+            }
             for share in sorted(self.shares.values(), key=lambda item: item.name.lower())
             if self._user_can_access(username, share.name)
         ]
@@ -393,7 +421,7 @@ class RemoteShareServer:
         data: bytes,
         expected_mtime_ns: Any,
     ) -> tuple[dict[str, Any], bytes]:
-        self._require_write(session_id, share_name)
+        share = self._require_write(session_id, share_name)
         if offset < 0:
             raise BadRequestError("negative offset")
         if len(data) > MAX_CHUNK_SIZE:
@@ -407,7 +435,7 @@ class RemoteShareServer:
         self._active_writers[str(target)] = session_id
         async with lock:
             try:
-                meta = await _to_thread(self._write_file_sync, target, offset, data)
+                meta = await _to_thread(self._write_file_sync, target, offset, data, True)
                 self._write_versions[str(target)] = (meta["mtime_ns"], session_id)
             finally:
                 if self._active_writers.get(str(target)) == session_id:
@@ -434,9 +462,16 @@ class RemoteShareServer:
             return None
         return "file has been modified by another client or on the server; this write will overwrite it"
 
-    def _write_file_sync(self, target: Path, offset: int, data: bytes) -> dict[str, Any]:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        mode = "r+b" if target.exists() else "wb"
+    def _write_file_sync(self, target: Path, offset: int, data: bytes, allow_create: bool) -> dict[str, Any]:
+        if target.exists():
+            if not target.is_file():
+                raise BadRequestError(f"not a file: {target.name}")
+            mode = "r+b"
+        else:
+            if not allow_create:
+                raise PermissionDeniedError("creating new files is not allowed")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            mode = "wb"
         with target.open(mode) as handle:
             handle.seek(offset)
             handle.write(data)
@@ -445,12 +480,14 @@ class RemoteShareServer:
         return stat_to_dict(target)
 
     def create(self, session_id: str, share_name: str, remote_path: str, kind: str, truncate: bool) -> dict[str, Any]:
-        self._require_write(session_id, share_name)
         target = self._resolve(session_id, share_name, remote_path)
         if kind == "dir":
+            self._require_write(session_id, share_name)
             target.mkdir(parents=True, exist_ok=True)
         elif kind == "file":
-            target.parent.mkdir(parents=True, exist_ok=True)
+            self._require_write(session_id, share_name)
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
             mode = "wb" if truncate else "ab"
             with target.open(mode):
                 pass
@@ -463,13 +500,14 @@ class RemoteShareServer:
         if size < 0:
             raise BadRequestError("negative truncate size")
         target = self._resolve(session_id, share_name, remote_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("r+b" if target.exists() else "wb") as handle:
             handle.truncate(size)
         return stat_to_dict(target)
 
     def delete(self, session_id: str, share_name: str, remote_path: str) -> dict[str, Any]:
-        self._require_write(session_id, share_name)
+        self._require_create_delete(session_id, share_name)
         target = self._resolve(session_id, share_name, remote_path)
         if not target.exists():
             raise NotFoundError(f"not found: {remote_path}")
@@ -480,7 +518,7 @@ class RemoteShareServer:
         return {"deleted": True}
 
     def rename(self, session_id: str, share_name: str, remote_path: str, new_path: str) -> dict[str, Any]:
-        self._require_write(session_id, share_name)
+        self._require_create_delete(session_id, share_name)
         src = self._resolve(session_id, share_name, remote_path)
         dst = self._resolve(session_id, share_name, new_path)
         if not src.exists():
@@ -508,7 +546,7 @@ class RemoteShareServer:
                 self.log(f"local change scan error: {exc}")
 
     def _scan_once(self) -> None:
-        for share in self.shares.values():
+        for share in list(self.shares.values()):
             for root, dirs, files in os.walk(share.path):
                 names = dirs + files
                 for name in names:
@@ -526,16 +564,47 @@ class RemoteShareServer:
 
 def parse_share_spec(spec: str) -> Share:
     if "=" not in spec:
-        raise ValueError("share spec must be NAME=PATH:permission")
+        raise ValueError("share spec must be NAME=PATH:permission[:create]")
     name, rest = spec.split("=", 1)
-    if ":" in rest:
-        raw_path, permission = rest.rsplit(":", 1)
-        if permission not in (READONLY, READWRITE):
-            raw_path = rest
-            permission = READONLY
-    else:
-        raw_path, permission = rest, READONLY
-    return Share(name=name, path=Path(raw_path).expanduser().resolve(), permission=permission)
+    raw_path, permission, allow_create_delete = _parse_share_options(rest)
+    return Share(
+        name=name,
+        path=Path(raw_path).expanduser().resolve(),
+        permission=permission,
+        allow_create_delete=allow_create_delete,
+    )
+
+
+def _parse_share_options(text: str) -> tuple[str, str, bool]:
+    create_flags = {
+        "create": True,
+        "delete": True,
+        "manage": True,
+        "full": True,
+        "create-delete": True,
+        "create_delete": True,
+        "allow-create-delete": True,
+        "allow_create_delete": True,
+        "no-create": False,
+        "no_create": False,
+        "existing-only": False,
+        "existing_only": False,
+    }
+    permission = READONLY
+    allow_create_delete = False
+    flag_source = text
+    if ":" in text:
+        before_flag, flag = text.rsplit(":", 1)
+        normalized = flag.strip().lower()
+        if normalized in create_flags:
+            allow_create_delete = create_flags[normalized]
+            flag_source = before_flag
+    if ":" in flag_source:
+        raw_path, maybe_permission = flag_source.rsplit(":", 1)
+        if maybe_permission in (READONLY, READWRITE):
+            permission = maybe_permission
+            return raw_path, permission, allow_create_delete
+    return flag_source, permission, allow_create_delete
 
 
 def parse_user_spec(spec: str) -> UserAccount:
