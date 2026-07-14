@@ -144,3 +144,6 @@ https://learn.microsoft.com/en-us/iis/publish/using-webdav/using-the-webdav-redi
 单次数据块上限：64 KB（MAX_CHUNK_SIZE = 64 * 1024）
 单帧上限：16 MB（MAX_FRAME_SIZE = 16 * 1024 * 1024）
 如果要改“项目内限制”，改 MAX_CHUNK_SIZE/MAX_FRAME_SIZE；如果要改你现在复制时的上限，更可能要改 Windows WebClient 的 FileSizeLimitInBytes（注册表）并重启服务/系统。
+
+若客户端显示无法访问，则需要用管理员身份运行exe
+或手动用管理员身份打开终端，运行net start WebClient
