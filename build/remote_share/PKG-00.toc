@@ -1,5 +1,5 @@
 ('D:\\ai\\Multi-user remote '
- 'control\\guazaicip\\v0.2\\build\\remote_share\\remote-share-mount.pkg',
+ 'control\\guazaicip\\v0.4\\build\\remote_share\\remote-share-mount.pkg',
  {'BINARY': True,
   'DATA': True,
   'EXECUTABLE': True,
@@ -12,27 +12,27 @@
  [('pyi-contents-directory _internal', '', 'OPTION'),
   ('PYZ-00.pyz',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\PYZ-00.pyz',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\PYZ-00.pyz',
    'PYZ'),
   ('struct',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\localpycs\\struct.pyc',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\localpycs\\struct.pyc',
    'PYMODULE'),
   ('pyimod01_archive',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\localpycs\\pyimod01_archive.pyc',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\localpycs\\pyimod01_archive.pyc',
    'PYMODULE'),
   ('pyimod02_importers',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\localpycs\\pyimod02_importers.pyc',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\localpycs\\pyimod02_importers.pyc',
    'PYMODULE'),
   ('pyimod03_ctypes',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\localpycs\\pyimod03_ctypes.pyc',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\localpycs\\pyimod03_ctypes.pyc',
    'PYMODULE'),
   ('pyimod04_pywin32',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\localpycs\\pyimod04_pywin32.pyc',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\localpycs\\pyimod04_pywin32.pyc',
    'PYMODULE'),
   ('pyiboot01_bootstrap',
    'D:\\anaconda3\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
@@ -50,7 +50,7 @@
    'D:\\anaconda3\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth__tkinter.py',
    'PYSOURCE'),
   ('launcher',
-   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.2\\launcher.py',
+   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.4\\launcher.py',
    'PYSOURCE')],
  'python312.dll',
  True,

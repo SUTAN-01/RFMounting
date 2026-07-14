@@ -17,12 +17,23 @@ from pathlib import Path
 from tkinter import BOTH, END, LEFT, X, filedialog, messagebox, ttk
 import tkinter as tk
 
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
 from .client_core import RemoteShareClient
 from .server_core import READONLY, READWRITE, RemoteShareServer, Share, UserAccount
 
 CONFIG_PATH = Path.home() / ".remote_share_mount" / "config.json"
 YES = "Yes"
 NO = "No"
+WEBCLIENT_PARAMETERS_KEY = r"SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
+WEBCLIENT_TUNABLES = {
+    "FileSizeLimitInBytes": 0xFFFFFFFF,
+    "LocalServerTimeoutInSec": 600,
+    "SendReceiveTimeoutInSec": 600,
+}
 
 
 def _load_config() -> dict:
@@ -522,10 +533,10 @@ class ClientPage(ttk.Frame):
         _save_config(self.config)
 
     def refresh(self) -> None:
+        client: RemoteShareClient | None = None
         try:
             client = self._client()
             shares = client.list_shares()
-            client.close()
             self.share_tree.delete(*self.share_tree.get_children())
             for share in shares:
                 self.share_tree.insert(
@@ -541,6 +552,9 @@ class ClientPage(ttk.Frame):
             self.log(f"loaded {len(shares)} share(s)")
         except Exception as exc:
             messagebox.showerror("Remote Share", str(exc))
+        finally:
+            if client is not None:
+                client.close()
 
     def browse_mount(self) -> None:
         if platform.system() == "Windows":
@@ -702,6 +716,50 @@ class ClientPage(ttk.Frame):
                 return "OTHER"
         return None
 
+    def _apply_webclient_tunables(self) -> bool:
+        if platform.system() != "Windows":
+            return False
+        if winreg is None:
+            raise RuntimeError("Python winreg support is unavailable on this Windows build.")
+        wow64 = getattr(winreg, "KEY_WOW64_64KEY", 0)
+        read_access = winreg.KEY_READ
+        if wow64:
+            read_access |= wow64
+        pending: dict[str, int] = {}
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WEBCLIENT_PARAMETERS_KEY, 0, read_access) as key:
+                for name, desired in WEBCLIENT_TUNABLES.items():
+                    try:
+                        current, _ = winreg.QueryValueEx(key, name)
+                    except FileNotFoundError:
+                        current = None
+                    if current != desired:
+                        pending[name] = desired
+        except OSError as exc:
+            raise RuntimeError(f"Failed to update Windows WebClient settings: {exc}") from exc
+        if not pending:
+            return False
+        write_access = winreg.KEY_WRITE
+        if wow64:
+            write_access |= wow64
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WEBCLIENT_PARAMETERS_KEY, 0, write_access) as key:
+                for name, desired in pending.items():
+                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, desired)
+        except PermissionError as exc:
+            raise RuntimeError(
+                "Updating Windows WebClient large-file settings requires administrator privileges. "
+                "Run the client once as administrator, then remount."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"Failed to update Windows WebClient settings: {exc}") from exc
+        if pending:
+            self.log(
+                "updated WebClient settings: "
+                + ", ".join(f"{name}={value}" for name, value in pending.items())
+            )
+        return True
+
     def _ensure_webclient_running(self) -> None:
         state = self._service_state("WebClient")
         if state == "RUNNING":
@@ -750,6 +808,10 @@ class ClientPage(ttk.Frame):
                 raise ValueError(f"{drive} is already mounted in this window. Choose another drive letter.")
             if self._is_windows_drive_in_use(drive):
                 raise ValueError(f"{drive} is already in use by Windows. Choose another drive letter or unmount it first.")
+            restart_needed = self._apply_webclient_tunables()
+            if restart_needed and self._service_state("WebClient") == "RUNNING":
+                self.log("restarting WebClient to apply large-file settings")
+                self._restart_webclient()
             self._ensure_webclient_running()
             listen_host, listen_port = self._next_webdav_endpoint(int(self.local_port_var.get() or "18080"))
             url_share = urllib.parse.quote(share.strip("/"), safe="")

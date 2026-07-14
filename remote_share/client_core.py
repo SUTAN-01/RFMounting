@@ -45,6 +45,10 @@ class RemoteShareClient:
         with self._lock:
             if self._sock is not None:
                 try:
+                    try:
+                        self._sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
                     self._sock.close()
                 finally:
                     self._sock = None

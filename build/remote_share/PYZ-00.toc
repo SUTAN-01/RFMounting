@@ -1,5 +1,5 @@
 ('D:\\ai\\Multi-user remote '
- 'control\\guazaicip\\v0.2\\build\\remote_share\\PYZ-00.pyz',
+ 'control\\guazaicip\\v0.4\\build\\remote_share\\PYZ-00.pyz',
  [('__future__', 'D:\\anaconda3\\Lib\\__future__.py', 'PYMODULE'),
   ('_compat_pickle', 'D:\\anaconda3\\Lib\\_compat_pickle.py', 'PYMODULE'),
   ('_compression', 'D:\\anaconda3\\Lib\\_compression.py', 'PYMODULE'),
@@ -301,41 +301,41 @@
   ('random', 'D:\\anaconda3\\Lib\\random.py', 'PYMODULE'),
   ('remote_share',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\__init__.py',
+   'control\\guazaicip\\v0.4\\remote_share\\__init__.py',
    'PYMODULE'),
   ('remote_share.__main__',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\__main__.py',
+   'control\\guazaicip\\v0.4\\remote_share\\__main__.py',
    'PYMODULE'),
   ('remote_share.cli',
-   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.2\\remote_share\\cli.py',
+   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.4\\remote_share\\cli.py',
    'PYMODULE'),
   ('remote_share.client_core',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\client_core.py',
+   'control\\guazaicip\\v0.4\\remote_share\\client_core.py',
    'PYMODULE'),
   ('remote_share.fuse_mount',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\fuse_mount.py',
+   'control\\guazaicip\\v0.4\\remote_share\\fuse_mount.py',
    'PYMODULE'),
   ('remote_share.gui',
-   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.2\\remote_share\\gui.py',
+   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.4\\remote_share\\gui.py',
    'PYMODULE'),
   ('remote_share.pathutil',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\pathutil.py',
+   'control\\guazaicip\\v0.4\\remote_share\\pathutil.py',
    'PYMODULE'),
   ('remote_share.protocol',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\protocol.py',
+   'control\\guazaicip\\v0.4\\remote_share\\protocol.py',
    'PYMODULE'),
   ('remote_share.server_core',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\server_core.py',
+   'control\\guazaicip\\v0.4\\remote_share\\server_core.py',
    'PYMODULE'),
   ('remote_share.webdav_bridge',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\remote_share\\webdav_bridge.py',
+   'control\\guazaicip\\v0.4\\remote_share\\webdav_bridge.py',
    'PYMODULE'),
   ('runpy', 'D:\\anaconda3\\Lib\\runpy.py', 'PYMODULE'),
   ('secrets', 'D:\\anaconda3\\Lib\\secrets.py', 'PYMODULE'),

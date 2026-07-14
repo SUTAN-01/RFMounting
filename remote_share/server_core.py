@@ -256,15 +256,18 @@ class RemoteShareServer:
                 if request.get("op") == "hello":
                     self.clients[session_id].username = self._session_users.get(session_id, "anonymous")
                 await async_send_message(writer, FRAME_RESPONSE, response, data)
-        except (asyncio.IncompleteReadError, EOFError):
+        except (asyncio.IncompleteReadError, EOFError, ConnectionResetError, BrokenPipeError):
             pass
         except Exception as exc:
             await self._send_error(writer, exc)
         finally:
             self.clients.pop(session_id, None)
             self._session_users.pop(session_id, None)
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass
             self.log(f"client disconnected {peer_text} session={session_id[:8]}")
 
     async def _send_error(self, writer: asyncio.StreamWriter, exc: Exception) -> None:

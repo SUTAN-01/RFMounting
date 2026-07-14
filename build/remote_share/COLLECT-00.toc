@@ -1,6 +1,6 @@
 ([('LIBBZ2.dll', 'D:\\anaconda3\\Library\\bin\\LIBBZ2.dll', 'BINARY'),
   ('README.md',
-   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.2\\README.md',
+   'D:\\ai\\Multi-user remote control\\guazaicip\\v0.4\\README.md',
    'DATA'),
   ('VCRUNTIME140.dll', 'D:\\anaconda3\\VCRUNTIME140.dll', 'BINARY'),
   ('_asyncio.pyd', 'D:\\anaconda3\\DLLs\\_asyncio.pyd', 'EXTENSION'),
@@ -2876,7 +2876,7 @@
    'BINARY'),
   ('base_library.zip',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\base_library.zip',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\base_library.zip',
    'DATA'),
   ('ffi.dll', 'D:\\anaconda3\\Library\\bin\\ffi.dll', 'BINARY'),
   ('libcrypto-3-x64.dll',
@@ -2891,7 +2891,7 @@
   ('python312.dll', 'D:\\anaconda3\\python312.dll', 'BINARY'),
   ('remote-share-mount.exe',
    'D:\\ai\\Multi-user remote '
-   'control\\guazaicip\\v0.2\\build\\remote_share\\remote-share-mount.exe',
+   'control\\guazaicip\\v0.4\\build\\remote_share\\remote-share-mount.exe',
    'EXECUTABLE'),
   ('select.pyd', 'D:\\anaconda3\\DLLs\\select.pyd', 'EXTENSION'),
   ('tcl86t.dll', 'D:\\anaconda3\\Library\\bin\\tcl86t.dll', 'BINARY'),
